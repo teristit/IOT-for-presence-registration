@@ -1,4 +1,5 @@
 .idea
 .venv
-.migrations
+.API-server\migrations
+.API-server\instance
 __pycache__

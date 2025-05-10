@@ -2,7 +2,6 @@ from flask import Blueprint, request, jsonify
 from app.models import AttendanceRecord
 from app import db
 from app.services.auth import require_api_key
-from datetime import datetime
 
 attendance_bp = Blueprint('attendance', __name__)
 
