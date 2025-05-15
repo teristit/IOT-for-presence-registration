@@ -5,7 +5,7 @@ from app.services.auth import require_api_key
 
 attendance_bp = Blueprint('attendance', __name__)
 
-# Эндпоинт для регистрации событий (только POST)
+
 @attendance_bp.route('/attendance', methods=['POST'])
 @require_api_key
 def register_attendance():
@@ -32,14 +32,14 @@ def register_attendance():
         'timestamp': new_record.timestamp.isoformat()
     }), 201
 
-# Эндпоинт для получения истории (только GET)
-@attendance_bp.route('/attendance/<device_id>', methods=['GET'])  # Убрали POST
-@require_api_key  # Добавили аутентификацию
+
+@attendance_bp.route('/attendance/<device_id>', methods=['GET'])
+@require_api_key
 def get_device_records(device_id):
     records = AttendanceRecord.query.filter_by(device_id=device_id)\
                                   .order_by(AttendanceRecord.timestamp.desc())\
                                   .limit(10).all()
-
+    print(records)
     return jsonify({
         'device_id': device_id,
         'records': [{

@@ -14,7 +14,7 @@ def require_api_key(f):
         if not api_key:
             return jsonify({'error': 'API key is missing'}), 401
 
-        device_id = request.json.get('device_id') if request.json else None
+        device_id = request.headers.get('Device-ID')
         if not device_id or API_KEYS.get(device_id) != api_key:
             return jsonify({'error': 'Invalid API key'}), 403
 

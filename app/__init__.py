@@ -15,8 +15,10 @@ def create_app():
 
     from app.routes.attendance import attendance_bp
     from app.routes.health import health_bp
+    from app.routes.last_event import last_event_bp
 
     app.register_blueprint(attendance_bp, url_prefix='/api')
     app.register_blueprint(health_bp, url_prefix='/api')
+    app.register_blueprint(last_event_bp, url_prefix='/api')
 
     return app
