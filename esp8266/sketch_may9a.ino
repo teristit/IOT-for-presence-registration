@@ -6,19 +6,31 @@
 #include <EEPROM.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h>
+#include <ArduinoJson.h>
 
 const char* serverUrl = "http://teristit.pythonanywhere.com/api/attendance";
-const char* apiKey = "secret-key-123"; // Замените на ваш ключ
+const char* serverUrlLastEvent = "http://teristit.pythonanywhere.com/api/last_event";
+const char* serverUrlHealth = "http://teristit.pythonanywhere.com/api/health";
+const char* apiKey = "secret-key-123"; 
+const char* apiDeviceID = "ESP8266_01"; 
 // Настройки дисплея
 #define TFT_DC    D4
 #define TFT_RST   D3
 Adafruit_ST7789 tft = Adafruit_ST7789(-1, TFT_DC, TFT_RST);
+
+String lastEventTime = "--:--:--";
 
 // Датчик касания TTP223
 #define TOUCH_PIN D1
 unsigned long touchStartTime = 0;
 bool configMode = false;
 bool touchActive = false;
+
+unsigned long lastWifiCheckTime = 0;
+const unsigned long wifiCheckInterval = 10000;
+
+int wifiReconnectAttempts = 0;
+const int maxReconnectAttempts = 5;
 
 // Веб-сервер
 ESP8266WebServer server(80);
@@ -49,8 +61,12 @@ void setup() {
     startConfigMode();
   } else {
     showIPAddress();
-    // Убрали startWebServer() так как используем API
-    sendAttendanceData("boot"); // Отправка события при запуске
+    String lastEvent = getLastEventFromServer();
+    if (!lastEvent.isEmpty()) {
+      displayLastEvent(lastEvent);
+    } else {
+      displayLastEvent("none");
+    }
   }
 }
 
@@ -61,8 +77,41 @@ void loop() {
   if (configMode) {
     server.handleClient();
   }
+  else {
+    // Проверка соединения WiFi
+    if (millis() - lastWifiCheckTime >= wifiCheckInterval) {
+      lastWifiCheckTime = millis();
+      
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi connection lost. Reconnecting...");
+        tft.fillRect(0, 0, 240, 30, ST77XX_BLACK);
+        tft.setCursor(10, 10);
+        tft.setTextColor(ST77XX_RED);
+        tft.print("Reconnecting WiFi...");
+        
+        WiFi.disconnect();
+        if (!connectWiFi()) {
+          wifiReconnectAttempts++;
+          Serial.print("Failed to reconnect. Attempt ");
+          Serial.println(wifiReconnectAttempts);
+          
+          if (wifiReconnectAttempts >= maxReconnectAttempts) {
+            Serial.println("Max attempts reached. Restarting...");
+            ESP.restart();
+          }
+        }
+        else {
+          // Восстановили соединение
+          tft.fillRect(0, 0, 240, 30, ST77XX_BLACK);
+          tft.setCursor(10, 10);
+          tft.setTextColor(ST77XX_GREEN);
+          tft.print("Connected: ");
+          tft.print(settings.ssid);
+        }
+      }
+    }
+  }
 }
-
 void handleTouch() {
   int touchState = digitalRead(TOUCH_PIN);
   
@@ -73,12 +122,11 @@ void handleTouch() {
   }
   
   // Короткое касание (регистрация события)
-  if (touchActive && touchState == LOW) {
+  if (touchState == LOW && millis() - touchStartTime < 1000) {
     touchActive = false;
-    if (millis() - touchStartTime < 1000) { // Короткое нажатие
-      sendAttendanceData("in"); // Или "out" в зависимости от логики
-      displayEventSent("in");
-    }
+    String lastEvent = getLastEventFromServer();
+    String newEvent = (lastEvent == "in") ? "out" : "in";
+    sendAttendanceData(newEvent);
     tft.fillRect(0, 200, 240, 40, ST77XX_BLACK);
   }
   
@@ -92,8 +140,78 @@ void handleTouch() {
   }
 }
 
+String getLastEventFromServer() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected");
+    return "";
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  
+  String url = String(serverUrlLastEvent) + "/" + String(apiDeviceID);
+  http.begin(client, url);
+  http.addHeader("X-API-KEY", apiKey);
+  http.addHeader("Device-ID", apiDeviceID);
+  
+  Serial.println("Requesting: " + url);
+  int httpCode = http.GET();
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    Serial.println("Received: " + payload);
+
+    DynamicJsonDocument doc(256); 
+    DeserializationError error = deserializeJson(doc, payload);
+    
+    if (error) {
+      Serial.print("JSON parse failed: ");
+      Serial.println(error.c_str());
+      return "";
+    }
+
+    if (doc.containsKey("last_event") && doc["last_event"].is<String>()) {
+      // Извлекаем время из timestamp (формат: 2025-05-21T20:29:42.751466)
+      if (doc.containsKey("timestamp")) {
+        String timestamp = doc["timestamp"].as<String>();
+        // Извлекаем только время (часы:минуты:секунды)
+        lastEventTime = timestamp.substring(11, 19);
+      }
+      return doc["last_event"].as<String>();
+    }
+  } else {
+    Serial.printf("HTTP error: %d\n", httpCode);
+  }
+  
+  http.end();
+  return "";
+}
+
+
+void displayLastEvent(String eventType) {
+  tft.fillRect(0, 100, 240, 60, ST77XX_BLACK);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(1);
+  
+  tft.setCursor(10, 110);
+  tft.print("Last event: ");
+  if (eventType == "none") {
+    tft.print("No data");
+  } else {
+    tft.print(eventType == "in" ? "IN" : "OUT");
+  }
+  
+  tft.setCursor(10, 130);
+  tft.print("Time: ");
+  tft.print(lastEventTime); // Показываем время вместо следующего события
+}
+
 bool connectWiFi() {
   if (strlen(settings.ssid) == 0) return false;
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
   
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
@@ -107,15 +225,25 @@ bool connectWiFi() {
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     tft.print(".");
+    Serial.print(".");
     attempts++;
+    if (attempts % 10 == 0) {
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(settings.ssid, settings.password);
+    }
   }
   
   if (WiFi.status() == WL_CONNECTED) {
     tft.println("\nConnected!");
+    Serial.println("\nConnected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
     return true;
   }
   
   tft.println("\nFailed!");
+  Serial.println("\nFailed to connect!");
   return false;
 }
 
@@ -207,6 +335,7 @@ void sendAttendanceData(String eventType) {
     http.begin(client, serverUrl);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-API-KEY", apiKey);
+    http.addHeader("Device-ID", apiDeviceID);
     
     String payload = "{\"device_id\":\"ESP8266_01\",\"event_type\":\"" + eventType + "\"}";
     
@@ -216,10 +345,22 @@ void sendAttendanceData(String eventType) {
       String response = http.getString();
       Serial.println(response);
       
-      // Вывод на дисплей
-      tft.fillRect(0, 100, 240, 40, ST77XX_BLACK);
+      // Обновляем время последнего события
+      if (httpCode == 201) {
+        // Парсим время из ответа сервера
+        DynamicJsonDocument doc(256);
+        DeserializationError error = deserializeJson(doc, response);
+        if (!error && doc.containsKey("event_time")) {
+          lastEventTime = doc["event_time"].as<String>();
+        }
+      }
+      
+      // Обновляем дисплей
+      displayLastEvent(eventType);
+      
+      tft.fillRect(0, 150, 240, 40, ST77XX_BLACK);
       tft.setTextColor(ST77XX_GREEN);
-      tft.setCursor(10, 110);
+      tft.setCursor(10, 160);
       tft.print("Status: ");
       tft.print(httpCode == 201 ? "OK" : "Error");
     }
